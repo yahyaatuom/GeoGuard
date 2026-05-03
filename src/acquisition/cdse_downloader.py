@@ -1,7 +1,6 @@
-# src/acquisition/cdse_downloader.py
+# src/acquisition/cdse_downloader.py (UPDATED)
 """
 Downloads real Sentinel-2 L2A data for Swat Valley from Copernicus Data Space Ecosystem (CDSE)
-Requires: Register at https://dataspace.copernicus.eu/
 """
 
 import os
@@ -10,10 +9,13 @@ import time
 from datetime import datetime, date
 from pathlib import Path
 from typing import List, Dict, Optional
+
+# 🔧 ADD THIS - Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()  # Looks for .env file in the current directory
+
 import requests
 from tqdm import tqdm
-import geopandas as gpd
-from shapely.geometry import Polygon
 
 class CDSEDownloader:
     """
@@ -26,8 +28,21 @@ class CDSEDownloader:
             client_id: OAuth2 client ID (from CDSE dashboard)
             client_secret: OAuth2 client secret
         """
+        # 🔧 ADD DEBUGGING - Print if credentials are found
         self.client_id = client_id or os.getenv('CDSE_CLIENT_ID')
         self.client_secret = client_secret or os.getenv('CDSE_CLIENT_SECRET')
+        
+        # Check if credentials were loaded
+        if self.client_id:
+            print(f"✓ Found CDSE_CLIENT_ID (first 10 chars: {self.client_id[:10]}...)")
+        else:
+            print("✗ CDSE_CLIENT_ID not found in environment variables")
+            
+        if self.client_secret:
+            print(f"✓ Found CDSE_CLIENT_SECRET (first 5 chars: {self.client_secret[:5]}...)")
+        else:
+            print("✗ CDSE_CLIENT_SECRET not found in environment variables")
+        
         self.token = None
         self.token_expiry = 0
         
@@ -37,55 +52,56 @@ class CDSEDownloader:
         
     def authenticate(self) -> bool:
         """
-        Get OAuth2 token for API access
-        
-        Returns:
-            bool: True if authentication successful
+        Get OAuth2 token for API access using client credentials flow
         """
-        print("🔐 Authenticating with Copernicus Data Space...")
+        print("\n🔐 Authenticating with Copernicus Data Space...")
         
+        # 🔧 FIX - Use correct OAuth2 payload format for token endpoint
+        # The payload should be form-encoded, not JSON
         payload = {
             'client_id': self.client_id,
             'client_secret': self.client_secret,
             'grant_type': 'client_credentials'
         }
         
+        # 🔧 IMPORTANT - Use 'data' parameter for form encoding (not 'json')
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
         try:
-            response = requests.post(self.token_url, data=payload)
+            response = requests.post(self.token_url, data=payload, headers=headers)
+            
+            # Debug info
+            print(f"   Status code: {response.status_code}")
+            
             response.raise_for_status()
             
             token_data = response.json()
             self.token = token_data['access_token']
-            # Token expires in 3600 seconds (1 hour)
             self.token_expiry = time.time() + token_data.get('expires_in', 3600)
             
             print(f"✅ Authentication successful. Token expires in {token_data.get('expires_in', 3600)}s")
             return True
             
+        except requests.exceptions.HTTPError as e:
+            print(f"❌ HTTP Error: {e}")
+            if response.status_code == 401:
+                print("   → This usually means: Client ID or Secret is incorrect")
+                print("   → Or the OAuth client wasn't created properly in CDSE dashboard")
+            return False
         except Exception as e:
             print(f"❌ Authentication failed: {e}")
             return False
     
+    # The rest of the class remains the same...
     def search_swat_tiles(self, start_date: date, end_date: date, max_clouds: int = 30) -> List[Dict]:
-        """
-        Search for Sentinel-2 products covering Swat Valley
-        
-        Args:
-            start_date: Start of date range
-            end_date: End of date range  
-            max_clouds: Maximum cloud cover percentage
-            
-        Returns:
-            List of product dictionaries
-        """
         if not self.token:
-            self.authenticate()
+            if not self.authenticate():
+                return []
         
-        # Swat Valley bounding box (WGS84)
-        swat_bbox = "72.5,34.7,72.8,35.0"  # min_lon,min_lat,max_lon,max_lat
+        swat_bbox = "72.5,34.7,72.8,35.0"
         
-        # Build OData query
-        # Looking for Sentinel-2 L2A products in Swat area
         query = (
             f"CollectionName='SENTINEL-2' AND "
             f"ContentDate/Start gt {start_date.isoformat()}T00:00:00Z AND "
@@ -108,7 +124,6 @@ class CDSEDownloader:
             products = response.json().get('value', [])
             print(f"📊 Found {len(products)} products")
             
-            # Sort by cloud cover (lowest first)
             products.sort(key=lambda x: x.get('CloudCover', 100))
             
             return products
@@ -118,16 +133,6 @@ class CDSEDownloader:
             return []
     
     def download_product(self, product: Dict, output_dir: str) -> bool:
-        """
-        Download a Sentinel-2 product
-        
-        Args:
-            product: Product dictionary from search
-            output_dir: Directory to save the product
-            
-        Returns:
-            bool: True if download successful
-        """
         product_id = product.get('Id')
         product_name = product.get('Name')
         
@@ -162,21 +167,22 @@ class CDSEDownloader:
             return False
 
 def download_swat_timestamps():
-    """
-    Downloads three timestamps for Swat Valley deforestation detection:
-    1. Baseline: April 2023 (dry season)
-    2. Mid: October 2023 (post-monsoon)
-    3. Recent: April 2024
-    """
+    """Downloads three timestamps for Swat Valley"""
     
-    # Create directories
     os.makedirs('data/raw/baseline', exist_ok=True)
     os.makedirs('data/raw/mid', exist_ok=True)
     os.makedirs('data/raw/recent', exist_ok=True)
     os.makedirs('data/cache', exist_ok=True)
     
-    # Initialize downloader
     downloader = CDSEDownloader()
+    
+    if not downloader.client_id or not downloader.client_secret:
+        print("\n❌ Missing credentials. Please check your .env file.")
+        print("   The .env file should be in: C:\\Users\\Dell\\Desktop\\GeoGuard\\.env")
+        print("   And contain:")
+        print("   CDSE_CLIENT_ID=your_actual_client_id")
+        print("   CDSE_CLIENT_SECRET=your_actual_client_secret")
+        return
     
     if not downloader.authenticate():
         print("Cannot proceed without authentication")
@@ -195,12 +201,10 @@ def download_swat_timestamps():
         products = downloader.search_swat_tiles(start_date, end_date, max_clouds=30)
         
         if products:
-            # Download the best product (lowest cloud cover)
             best = products[0]
             output_dir = f'data/raw/{name}'
             downloader.download_product(best, output_dir)
             
-            # Save metadata
             metadata = {
                 'product_name': best.get('Name'),
                 'cloud_cover': best.get('CloudCover'),
